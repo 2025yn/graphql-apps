@@ -1,0 +1,369 @@
+Django + GraphQL 示例
+下面是一个完整的 Django 项目示例，使用 GraphQL 来查询和操作 Teacher 和 Student 模型。
+
+1. 安装必要的包
+首先，确保安装了必要的 Python 包：
+
+bash
+复制
+pip install django graphene-django django-filter
+2. 项目结构
+复制
+myproject/
+    ├── myproject/
+    │   ├── __init__.py
+    │   ├── settings.py
+    │   ├── urls.py
+    │   └── wsgi.py
+    ├── school/
+    │   ├── __init__.py
+    │   ├── models.py
+    │   ├── schema.py
+    │   └── urls.py
+    └── manage.py
+3. 模型 (school/models.py)
+python
+复制
+from django.db import models
+
+class Teacher(models.Model):
+    name = models.CharField(max_length=100)
+
+    def __str__(self):
+        return self.name
+
+class Student(models.Model):
+    name = models.CharField(max_length=100)
+    roll_no = models.CharField(max_length=10)
+    class_teacher = models.ForeignKey(
+        Teacher, related_name="students", on_delete=models.CASCADE
+    )
+
+    def __str__(self):
+        return self.name
+4. GraphQL Schema (school/schema.py)
+python
+复制
+import graphene
+from graphene_django import DjangoObjectType
+from .models import Teacher, Student
+
+class TeacherType(DjangoObjectType):
+    class Meta:
+        model = Teacher
+        fields = ("id", "name", "students")
+
+class StudentType(DjangoObjectType):
+    class Meta:
+        model = Student
+        fields = ("id", "name", "roll_no", "class_teacher")
+
+class Query(graphene.ObjectType):
+    all_teachers = graphene.List(TeacherType)
+    all_students = graphene.List(StudentType)
+    teacher_by_name = graphene.Field(TeacherType, name=graphene.String(required=True))
+    students_by_teacher = graphene.List(StudentType, teacher_name=graphene.String())
+
+    def resolve_all_teachers(root, info):
+        return Teacher.objects.all()
+
+    def resolve_all_students(root, info):
+        return Student.objects.select_related("class_teacher").all()
+
+    def resolve_teacher_by_name(root, info, name):
+        try:
+            return Teacher.objects.get(name=name)
+        except Teacher.DoesNotExist:
+            return None
+
+    def resolve_students_by_teacher(root, info, teacher_name):
+        return Student.objects.filter(class_teacher__name=teacher_name)
+
+class CreateTeacher(graphene.Mutation):
+    class Arguments:
+        name = graphene.String(required=True)
+
+    teacher = graphene.Field(TeacherType)
+
+    @classmethod
+    def mutate(cls, root, info, name):
+        teacher = Teacher(name=name)
+        teacher.save()
+        return CreateTeacher(teacher=teacher)
+
+class CreateStudent(graphene.Mutation):
+    class Arguments:
+        name = graphene.String(required=True)
+        roll_no = graphene.String(required=True)
+        teacher_id = graphene.ID(required=True)
+
+    student = graphene.Field(StudentType)
+
+    @classmethod
+    def mutate(cls, root, info, name, roll_no, teacher_id):
+        student = Student(
+            name=name,
+            roll_no=roll_no,
+            class_teacher_id=teacher_id
+        )
+        student.save()
+        return CreateStudent(student=student)
+
+class Mutation(graphene.ObjectType):
+    create_teacher = CreateTeacher.Field()
+    create_student = CreateStudent.Field()
+
+schema = graphene.Schema(query=Query, mutation=Mutation)
+5. URL 配置 (myproject/urls.py)
+python
+复制
+from django.contrib import admin
+from django.urls import path
+from graphene_django.views import GraphQLView
+from school.schema import schema
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('graphql/', GraphQLView.as_view(graphiql=True, schema=schema)),
+]
+6. 配置 settings.py
+确保在 INSTALLED_APPS 中添加了以下内容：
+
+python
+复制
+INSTALLED_APPS = [
+    ...
+    'django.contrib.staticfiles',  # 确保这个存在
+    'graphene_django',
+    'school',
+]
+
+GRAPHENE = {
+    'SCHEMA': 'school.schema.schema'
+}
+7. 运行项目
+bash
+复制
+python manage.py makemigrations
+python manage.py migrate
+python manage.py runserver
+8. 使用 GraphQL
+访问 http://localhost:8000/graphql/ 可以使用 GraphiQL 界面进行查询和操作。
+
+示例查询：
+graphql
+复制
+# 查询所有老师
+query {
+  allTeachers {
+    id
+    name
+    students {
+      name
+      rollNo
+    }
+  }
+}
+
+# 查询特定老师的学生
+query {
+  studentsByTeacher(teacherName: "Mr. Smith") {
+    name
+    rollNo
+  }
+}
+
+# 创建新老师
+mutation {
+  createTeacher(name: "Mr. Johnson") {
+    teacher {
+      id
+      name
+    }
+  }
+}
+
+# 创建新学生
+mutation {
+  createStudent(
+    name: "Alice"
+    rollNo: "A123"
+    teacherId: 1
+  ) {
+    student {
+      id
+      name
+      rollNo
+      classTeacher {
+        name
+      }
+    }
+  }
+}
+9. 高级功能（可选）
+如果你想添加更多高级功能，如过滤、分页等，可以修改 schema.py：
+
+python
+复制
+from graphene_django.filter import DjangoFilterConnectionField
+
+class TeacherNode(DjangoObjectType):
+    class Meta:
+        model = Teacher
+        interfaces = (graphene.relay.Node,)
+        filter_fields = ['name']
+
+class StudentNode(DjangoObjectType):
+    class Meta:
+        model = Student
+        interfaces = (graphene.relay.Node,)
+        filter_fields = {
+            'name': ['exact', 'icontains', 'istartswith'],
+            'roll_no': ['exact'],
+            'class_teacher__name': ['exact'],
+        }
+
+class Query(graphene.ObjectType):
+    teacher = graphene.relay.Node.Field(TeacherNode)
+    all_teachers = DjangoFilterConnectionField(TeacherNode)
+
+    student = graphene.relay.Node.Field(StudentNode)
+    all_students = DjangoFilterConnectionField(StudentNode)
+这样你就可以使用更复杂的查询和过滤功能了。
+
+希望这个示例对你有所帮助！
+
+目前数据库没有数据，写一个脚本创建可以在上面应用中使用的数据
+数据库初始化脚本
+下面是一个 Django 数据初始化脚本，可以创建教师和学生数据供你的 GraphQL 应用使用。
+
+1. 创建数据初始化脚本
+在 school 应用目录下创建一个 management/commands/seed_data.py 文件：
+
+复制
+school/
+    ├── management/
+    │   ├── __init__.py
+    │   └── commands/
+    │       ├── __init__.py
+    │       └── seed_data.py
+    └── ...
+school/management/commands/seed_data.py 文件内容：
+
+python
+复制
+from django.core.management.base import BaseCommand
+from school.models import Teacher, Student
+import random
+
+class Command(BaseCommand):
+    help = 'Seeds the database with sample teachers and students'
+
+    def handle(self, *args, **options):
+        self.stdout.write('Seeding data...')
+        
+        # 清除现有数据
+        Teacher.objects.all().delete()
+        Student.objects.all().delete()
+
+        # 创建教师
+        teachers = [
+            {"name": "Mr. Smith"},
+            {"name": "Ms. Johnson"},
+            {"name": "Dr. Williams"},
+            {"name": "Mrs. Brown"},
+            {"name": "Prof. Davis"}
+        ]
+
+        created_teachers = []
+        for teacher_data in teachers:
+            teacher = Teacher.objects.create(**teacher_data)
+            created_teachers.append(teacher)
+            self.stdout.write(f'Created teacher: {teacher.name}')
+
+        # 创建学生
+        first_names = ["Emma", "Liam", "Olivia", "Noah", "Ava", "William", 
+                      "Sophia", "James", "Isabella", "Benjamin", "Mia", "Lucas"]
+        last_names = ["Johnson", "Smith", "Williams", "Brown", "Jones", 
+                      "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
+
+        for i in range(1, 31):  # 创建30个学生
+            first_name = random.choice(first_names)
+            last_name = random.choice(last_names)
+            student = Student.objects.create(
+                name=f"{first_name} {last_name}",
+                roll_no=f"STU{i:03d}",
+                class_teacher=random.choice(created_teachers)
+            )
+            self.stdout.write(f'Created student: {student.name} (Roll No: {student.roll_no}) with teacher {student.class_teacher.name}')
+
+        self.stdout.write(self.style.SUCCESS('Successfully seeded database!'))
+2. 运行数据初始化脚本
+执行以下命令来填充数据库：
+
+bash
+复制
+python manage.py seed_data
+3. 验证数据
+你可以通过以下方式验证数据：
+
+使用 Django shell:
+bash
+复制
+python manage.py shell
+然后在 shell 中:
+
+python
+复制
+from school.models import Teacher, Student
+
+# 统计教师和学生数量
+print(f"Total teachers: {Teacher.objects.count()}")
+print(f"Total students: {Student.objects.count()}")
+
+# 查看前5个学生
+for student in Student.objects.all()[:5]:
+    print(f"{student.name} (Roll No: {student.roll_no}) - Teacher: {student.class_teacher.name}")
+使用 GraphQL 查询:
+访问 http://localhost:8000/graphql/ 并执行以下查询：
+
+graphql
+复制
+# 查询所有老师及其学生
+query {
+  allTeachers {
+    name
+    students {
+      name
+      rollNo
+    }
+  }
+}
+
+# 查询所有学生及其班主任
+query {
+  allStudents {
+    name
+    rollNo
+    classTeacher {
+      name
+    }
+  }
+}
+4. 可选：添加更多测试数据
+如果你想添加更多特定数据用于测试，可以修改 seed_data.py 脚本，例如：
+
+python
+复制
+# 添加特定测试用例
+test_teacher = Teacher.objects.create(name="Test Teacher")
+Student.objects.create(name="Test Student", roll_no="TEST001", class_teacher=test_teacher)
+5. 重置数据
+如果你想重新初始化数据，只需再次运行：
+
+bash
+复制
+python manage.py seed_data
+这个脚本会先删除所有现有数据，然后重新创建新的测试数据，确保你每次都有干净的测试数据集。
+
+这个初始化脚本创建了5名教师和30名学生，学生随机分配给教师，姓名和学号也是自动生成的，适合测试你的GraphQL接口的各种查询和变更操作。
